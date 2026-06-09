@@ -736,7 +736,29 @@ function pageContent(r) {
   return '';
 }
 
-// ── Render full dashboard ──
+// ── Extract month label from filename — handles all common formats ──
+function monthFromFilename(filename) {
+  const f = filename.toLowerCase().replace(/[_\-\s]/g, '');
+  const moNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  // Format: 202602, 202603, 202604, 202605 (YYYYMM anywhere in filename)
+  const ym = f.match(/20(\d{2})0?(\d{1,2})/);
+  if (ym) {
+    const yr = ym[1]; // e.g. "26"
+    const mo = parseInt(ym[2]); // e.g. 2 for Feb
+    if (mo >= 1 && mo <= 12) return moNames[mo-1] + '-' + yr;
+  }
+
+  // Format: feb2026, mar26, february2026
+  const named = f.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(20)?(\d{2})/);
+  if (named) {
+    const moMap = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+    const idx = moMap[named[1].slice(0,3)];
+    return moNames[idx] + '-' + named[3];
+  }
+
+  return '';
+}
 function renderDash(r, resetTab) {
   if (resetTab) S.tab = 'dashboard';
   S.result = r;
@@ -784,11 +806,8 @@ window.handleNewBill = async function(e) {
       const bd = file.name.toLowerCase().endsWith('.csv')
         ? parseCSVBill(new TextDecoder().decode(buf))
         : parseBillText(await pdfToText(new Uint8Array(buf)));
-      if (!bd.billMonth) {
-        const fnLower = file.name.toLowerCase();
-        const moMatch = fnLower.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s_-]?(\d{2,4})/i);
-        if (moMatch) bd.billMonth = moMatch[0].replace(/[_-]/g,' ');
-      }
+      const fnMonth = monthFromFilename(file.name);
+      if (fnMonth) bd.billMonth = fnMonth;
       newBills.push(bd);
     }
     // Re-process all bills stored + new ones
@@ -799,7 +818,6 @@ window.handleNewBill = async function(e) {
 };
 
 // ── Process both files ──
-// After analyseAll, store parsed bills for future "add month" use
 async function processFiles() {
   app.innerHTML = `<div class="spinner"><div class="spin"></div><div style="font-size:13px;color:#64748b">Reading ${S.files.billRaws.length} bill file(s) and matching to staff…</div></div>`;
   try {
@@ -812,11 +830,9 @@ async function processFiles() {
       const bd = billFile.name.toLowerCase().endsWith('.csv')
         ? parseCSVBill(new TextDecoder().decode(buf))
         : parseBillText(await pdfToText(new Uint8Array(buf)));
-      if (!bd.billMonth) {
-        const fnLower = billFile.name.toLowerCase();
-        const moMatch = fnLower.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s_-]?(\d{2,4})/i);
-        if (moMatch) bd.billMonth = moMatch[0].replace(/[_-]/g,' ');
-      }
+      // Always try filename first — most reliable
+      const fnMonth = monthFromFilename(billFile.name);
+      if (fnMonth) bd.billMonth = fnMonth;
       billDataArr.push(bd);
     }
     S._allBillData = billDataArr;
