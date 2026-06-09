@@ -254,71 +254,121 @@ async function pdfToText(buf) {
 
 // ── Parse Singtel PDF bill ──
 function parseBillText(text) {
-  // ── Singtel-specific parser ──
-  // Bill Date pattern: "Bill Date 19 Feb 2026" or "Bill Date\n19 Feb 2026"
+  // ── Singtel BizVoice bill parser ──
+  const moNames = {jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',
+    jul:'July',aug:'August',sep:'September',oct:'October',nov:'November',dec:'December'};
+  const moShort = {jan:'Jan',feb:'Feb',mar:'Mar',apr:'Apr',may:'May',jun:'Jun',
+    jul:'Jul',aug:'Aug',sep:'Sep',oct:'Oct',nov:'Nov',dec:'Dec'};
+
+  // ── Bill month detection — multiple patterns ──
   let billMonth = '';
-  const bdMatch = text.match(/Bill\s+Date\s+(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i);
-  if (bdMatch) {
-    const moNames = {jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September',oct:'October',nov:'November',dec:'December'};
-    billMonth = (moNames[bdMatch[2].toLowerCase().slice(0,3)] || bdMatch[2]) + ' ' + bdMatch[3];
+  // Pattern 1: "Bill Date 19 Feb 2026" (all on one line after PDF extraction)
+  const bd1 = text.match(/Bill\s*Date\s+(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i);
+  if (bd1) billMonth = moShort[bd1[2].toLowerCase().slice(0,3)] + '-' + bd1[3].slice(2);
+  // Pattern 2: "17 Mar 2026" standalone (PDF sometimes splits lines)
+  if (!billMonth) {
+    const bd2 = text.match(/\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(20\d{2})\b/i);
+    if (bd2) billMonth = moShort[bd2[2].toLowerCase().slice(0,3)] + '-' + bd2[3].slice(2);
   }
-
-  // Total Due: "Total Due (SGD) 981.12" or "Total Due 981.12"
-  let totalBill = 0;
-  const tdMatch = text.match(/Total\s+(?:Current\s+)?(?:Due|Charges)\s*(?:\(SGD\))?\s*([\d,]+\.\d{2})/i);
-  if (tdMatch) totalBill = parseFloat(tdMatch[1].replace(/,/g,''));
-
-  // GST values for reference
-  const gstMatch = text.match(/Current\s+Taxable\s+Charges\s+of\s+SGD\s*([\d,]+\.\d{2})\s*@\s*9\s*%\s+([\d,]+\.\d{2})/i);
-  const gst = gstMatch ? parseFloat(gstMatch[2].replace(/,/g,'')) : 0;
-
-  // Parse per-BIZVOICE-number blocks
-  // Pattern: "BIZVOICE NO. 63249209" ... "Total 18.00"
-  const lineCharges = {};
-  const iddRows = [];
-
-  // Split text into blocks by "BIZVOICE NO." or "TELEPHONE NO."
-  const blockRe = /(?:BIZVOICE|TELEPHONE)\s+NO\.\s+(\d{8})([\s\S]*?)(?=(?:BIZVOICE|TELEPHONE)\s+NO\.|GST\s*\n|Total Current Charges|$)/g;
-  let blockMatch;
-  while ((blockMatch = blockRe.exec(text)) !== null) {
-    const num = blockMatch[1];
-    const block = blockMatch[2];
-
-    // Get the block total: last "Total X.XX" in block
-    const totals = [...block.matchAll(/\bTotal\s+([\d,]+\.\d{2})/g)];
-    if (!totals.length) continue;
-    const lineTotal = parseFloat(totals[totals.length-1][1].replace(/,/g,''));
-    if (lineTotal <= 0 || lineTotal > 2000) continue;
-
-    if (!lineCharges[num]) lineCharges[num] = {num, total:0, count:0};
-    lineCharges[num].total += lineTotal;
-    lineCharges[num].count++;
-
-    // Check for IDD in this block
-    if (/IDD\s+001\s+Call/i.test(block)) {
-      // Get "Total for IDD 001 Call X.XX"
-      const iddTotMatch = block.match(/Total\s+for\s+IDD\s+001\s+Call\s+([\d,]+\.\d{2})/i);
-      const iddAmt = iddTotMatch ? parseFloat(iddTotMatch[1].replace(/,/g,'')) : 0;
-      // Get country from first IDD call line
-      const countryMatch = block.match(/\b(Philippines|Malaysia|India|Indonesia|China|Australia|USA|United States|New Zealand|UK|Singapore)\b/i);
-      const country = countryMatch ? countryMatch[1] : '';
-      if (iddAmt > 0) iddRows.push({num, amount:iddAmt, country});
+  // Pattern 3: from filename hint already applied upstream — leave empty for upstream to fill
+  // Pattern 4: from subscription charge period e.g. "12 Mar 2026 to 11 Apr 2026"
+  if (!billMonth) {
+    const bd3 = text.match(/12\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(20\d{2})\s+to/i);
+    if (bd3) {
+      // subscription period "12 Mar 2026 to 11 Apr 2026" means it's the Apr bill
+      const moIdx = Object.keys(moShort).indexOf(bd3[1].toLowerCase().slice(0,3));
+      const nextMo = moIdx >= 0 ? Object.values(moShort)[moIdx] : bd3[1].slice(0,3);
+      billMonth = nextMo + '-' + bd3[2].slice(2);
     }
   }
 
-  // Fallback: if no blocks found, use simple phone number scan
+  // ── Total bill amount ──
+  let totalBill = 0;
+  // "Total Current Charges 981.12" (last page)
+  const tc = text.match(/Total\s+Current\s+Charges\s+([\d,]+\.\d{2})/i);
+  if (tc) totalBill = parseFloat(tc[1].replace(/,/g,''));
+  // Fallback: "Total Due (SGD) 981.12"
+  if (!totalBill) {
+    const td = text.match(/Total\s+Due\s*(?:\(SGD\))?\s*([\d,]+\.\d{2})/i);
+    if (td) totalBill = parseFloat(td[1].replace(/,/g,''));
+  }
+
+  // ── GST ──
+  const gstM = text.match(/Current\s+Taxable\s+Charges[^\n]*@\s*9\s*%\s+([\d,]+\.\d{2})/i);
+  const gst = gstM ? parseFloat(gstM[1].replace(/,/g,'')) : 0;
+
+  // ── Per-line charges & IDD ──
+  // Parse each BIZVOICE/TELEPHONE block
+  const lineCharges = {};
+  const iddRows = [];
+
+  // Regex to capture each number block
+  const blockRe = /(?:BIZVOICE|TELEPHONE)\s+NO\.\s+(\d{8})\s*([\s\S]*?)(?=(?:BIZVOICE|TELEPHONE)\s+NO\.\s+\d{8}|^\s*GST\s*$|Total Current Charges|Total\s+\d{2,3}\.\d{2}\s*$)/gm;
+  let bm;
+  while ((bm = blockRe.exec(text)) !== null) {
+    const num = bm[1];
+    const block = bm[2];
+
+    // Block total = last standalone "Total X.XX" line
+    const allTotals = [...block.matchAll(/^\s*Total\s+([\d,]+\.\d{2})\s*$/gm)];
+    if (!allTotals.length) {
+      // try inline total
+      const inlineTot = [...block.matchAll(/\bTotal\s+([\d,]+\.\d{2})/g)];
+      if (!inlineTot.length) continue;
+      const amt = parseFloat(inlineTot[inlineTot.length-1][1].replace(/,/g,''));
+      if (amt > 0 && amt < 2000) {
+        if (!lineCharges[num]) lineCharges[num] = {num,total:0,count:0};
+        lineCharges[num].total += amt; lineCharges[num].count++;
+      }
+      continue;
+    }
+    const lineTotal = parseFloat(allTotals[allTotals.length-1][1].replace(/,/g,''));
+    if (lineTotal <= 0 || lineTotal > 2000) continue;
+    if (!lineCharges[num]) lineCharges[num] = {num,total:0,count:0};
+    lineCharges[num].total += lineTotal; lineCharges[num].count++;
+
+    // IDD detection in this block
+    if (/IDD\s*001\s*Call/i.test(block)) {
+      // "Total for IDD 001 Call\n51.96" OR "Total for IDD 001 Call 51.96"
+      const iddM = block.match(/Total\s+for\s+IDD\s*001\s*Call\s*\n?\s*([\d,]+\.\d{2})/i);
+      const iddAmt = iddM ? parseFloat(iddM[1].replace(/,/g,'')) : 0;
+      // Get primary country
+      const ctryM = block.match(/\b(Philippines|Malaysia|India|Indonesia|China|Australia|USA|United\s*States|New\s*Zealand|UK|Singapore)\b/i);
+      const country = ctryM ? ctryM[1] : '';
+      if (iddAmt > 0) iddRows.push({num, amount:iddAmt, country});
+      else {
+        // Fallback: sum individual IDD call amounts
+        const iddLines = [...block.matchAll(/\b(Philippines|Malaysia|India|Indonesia|China|Australia|USA|New Zealand)\b[^\n]*([\d]+\.\d{2})/gi)];
+        if (iddLines.length) {
+          const sumAmt = iddLines.reduce((s,m)=>s+parseFloat(m[2]),0);
+          if (sumAmt>0) iddRows.push({num,amount:sumAmt,country:iddLines[0][1]});
+        }
+      }
+    }
+  }
+
+  // ── Fallback if block regex captured nothing ──
   if (!Object.keys(lineCharges).length) {
-    const lines = text.split('\n');
-    const phoneRe = /\b([689]\d{7})\b/;
-    const amtRe = /\$?\s*([\d,]+\.\d{2})/g;
-    lines.forEach(line => {
-      const pm = line.match(phoneRe); if (!pm) return;
-      const num = pm[1];
-      const amounts = [...line.matchAll(amtRe)]; if (!amounts.length) return;
-      const amt = parseFloat(amounts[amounts.length-1][1].replace(/,/g,''));
-      if (amt <= 0 || amt > 5000) return;
-      if (!lineCharges[num]) lineCharges[num] = {num, total:0, count:0};
-      lineCharges[num].total += amt; lineCharges[num].count++;
+    // Try simpler: find all "BIZVOICE NO. XXXXXXXX" followed eventually by "Total X.XX"
+    const simple = text.split(/(?=BIZVOICE NO\.|TELEPHONE NO\.)/);
+    simple.forEach(chunk => {
+      const nm = chunk.match(/(?:BIZVOICE|TELEPHONE)\s+NO\.\s+(\d{8})/);
+      if (!nm) return;
+      const num = nm[1];
+      const tots = [...chunk.matchAll(/\bTotal\s+([\d,]+\.\d{2})/g)];
+      if (!tots.length) return;
+      const amt = parseFloat(tots[tots.length-1][1].replace(/,/g,''));
+      if (amt>0 && amt<2000) {
+        if (!lineCharges[num]) lineCharges[num]={num,total:0,count:0};
+        lineCharges[num].total+=amt; lineCharges[num].count++;
+      }
+      if (/IDD\s*001/i.test(chunk)) {
+        const im = chunk.match(/Total\s+for\s+IDD[^\n]*([\d,]+\.\d{2})/i);
+        if (im) {
+          const ct = chunk.match(/\b(Philippines|Malaysia|India|Indonesia|China|Australia|USA|New Zealand)\b/i);
+          iddRows.push({num,amount:parseFloat(im[1].replace(/,/g,'')),country:ct?ct[1]:''});
+        }
+      }
     });
   }
 
