@@ -242,14 +242,41 @@ function parseStaff(buf) {
 
 // ── PDF to text ──
 async function pdfToText(buf) {
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
-  let t = '';
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const pg = await pdf.getPage(i);
-    const c = await pg.getTextContent();
-    t += c.items.map(s => s.str).join(' ') + '\n';
+  console.log('pdfToText called, buf size:', buf.byteLength);
+  console.log('pdfjsLib available:', typeof pdfjsLib !== 'undefined');
+  if (typeof pdfjsLib === 'undefined') {
+    console.error('PDF.js not loaded! Trying to load dynamically...');
+    // Try loading PDF.js dynamically
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      s.onload = resolve;
+      s.onerror = () => {
+        const s2 = document.createElement('script');
+        s2.src = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js';
+        s2.onload = resolve;
+        s2.onerror = reject;
+        document.head.appendChild(s2);
+      };
+      document.head.appendChild(s);
+    });
   }
-  return t;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  try {
+    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+    console.log('PDF loaded, pages:', pdf.numPages);
+    let t = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const pg = await pdf.getPage(i);
+      const c = await pg.getTextContent();
+      t += c.items.map(s => s.str).join(' ') + '\n';
+    }
+    console.log('PDF text extracted, length:', t.length, 'sample:', t.slice(0, 200));
+    return t;
+  } catch(err) {
+    console.error('PDF parsing error:', err);
+    throw err;
+  }
 }
 
 // ── Parse Singtel PDF bill ──
