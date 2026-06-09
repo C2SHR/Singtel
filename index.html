@@ -254,35 +254,77 @@ async function pdfToText(buf) {
 
 // ── Parse Singtel PDF bill ──
 function parseBillText(text) {
-  const lines = text.split('\n');
-  const phoneRe = /\b([689]\d{7})\b/;
-  const amtRe   = /\$?\s*([\d,]+\.\d{2})/g;
+  // ── Singtel-specific parser ──
+  // Bill Date pattern: "Bill Date 19 Feb 2026" or "Bill Date\n19 Feb 2026"
   let billMonth = '';
-  const mo2 = text.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d\d)\b/i);
-  if (mo2) billMonth = mo2[1] + ' ' + mo2[2];
-  if (!billMonth) { const m = text.match(/bill(?:ing)?\s*(?:period|month)[^\n]*?([A-Za-z]+\s*\d{4})/i); if (m) billMonth = m[1]; }
+  const bdMatch = text.match(/Bill\s+Date\s+(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i);
+  if (bdMatch) {
+    const moNames = {jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September',oct:'October',nov:'November',dec:'December'};
+    billMonth = (moNames[bdMatch[2].toLowerCase().slice(0,3)] || bdMatch[2]) + ' ' + bdMatch[3];
+  }
+
+  // Total Due: "Total Due (SGD) 981.12" or "Total Due 981.12"
   let totalBill = 0;
-  const tM = text.match(/(?:total\s+(?:amount\s+)?due|amount\s+payable|grand\s+total)[^\d]*(\d[\d,]*\.\d{2})/i);
-  if (tM) totalBill = parseFloat(tM[1].replace(/,/g, ''));
+  const tdMatch = text.match(/Total\s+(?:Current\s+)?(?:Due|Charges)\s*(?:\(SGD\))?\s*([\d,]+\.\d{2})/i);
+  if (tdMatch) totalBill = parseFloat(tdMatch[1].replace(/,/g,''));
+
+  // GST values for reference
+  const gstMatch = text.match(/Current\s+Taxable\s+Charges\s+of\s+SGD\s*([\d,]+\.\d{2})\s*@\s*9\s*%\s+([\d,]+\.\d{2})/i);
+  const gst = gstMatch ? parseFloat(gstMatch[2].replace(/,/g,'')) : 0;
+
+  // Parse per-BIZVOICE-number blocks
+  // Pattern: "BIZVOICE NO. 63249209" ... "Total 18.00"
   const lineCharges = {};
-  lines.forEach(line => {
-    const pm = line.match(phoneRe); if (!pm) return;
-    const num = pm[1]; const amounts = [...line.matchAll(amtRe)]; if (!amounts.length) return;
-    const amt = parseFloat(amounts[amounts.length - 1][1].replace(/,/g, ''));
-    if (amt <= 0 || amt > 5000) return;
-    if (!lineCharges[num]) lineCharges[num] = { num, total: 0, count: 0 };
-    lineCharges[num].total += amt; lineCharges[num].count++;
-  });
   const iddRows = [];
-  const iS = text.match(/(?:idd|international\s+direct|overseas\s+call)([\s\S]{0,3000}?)(?:subtotal|total\s+amount|roaming|local\s+call)/i);
-  if (iS) iS[1].split('\n').forEach(line => {
-    const pm = line.match(phoneRe); const amounts = [...line.matchAll(amtRe)];
-    if (pm && amounts.length) { const amt = parseFloat(amounts[amounts.length - 1][1].replace(/,/g, '')); if (amt > 0) iddRows.push({ num: pm[1], amount: amt, country: '' }); }
-  });
-  let iddTotal = iddRows.reduce((s, r) => s + r.amount, 0);
-  if (!iddTotal) { const im = text.match(/(?:idd|international)[^\d\n]*(\d[\d,]*\.\d{2})/i); if (im) iddTotal = parseFloat(im[1].replace(/,/g, '')); }
-  if (!totalBill) totalBill = Object.values(lineCharges).reduce((s, r) => s + r.total, 0);
-  return { billMonth, totalBill, lineCharges, iddRows, iddTotal };
+
+  // Split text into blocks by "BIZVOICE NO." or "TELEPHONE NO."
+  const blockRe = /(?:BIZVOICE|TELEPHONE)\s+NO\.\s+(\d{8})([\s\S]*?)(?=(?:BIZVOICE|TELEPHONE)\s+NO\.|GST\s*\n|Total Current Charges|$)/g;
+  let blockMatch;
+  while ((blockMatch = blockRe.exec(text)) !== null) {
+    const num = blockMatch[1];
+    const block = blockMatch[2];
+
+    // Get the block total: last "Total X.XX" in block
+    const totals = [...block.matchAll(/\bTotal\s+([\d,]+\.\d{2})/g)];
+    if (!totals.length) continue;
+    const lineTotal = parseFloat(totals[totals.length-1][1].replace(/,/g,''));
+    if (lineTotal <= 0 || lineTotal > 2000) continue;
+
+    if (!lineCharges[num]) lineCharges[num] = {num, total:0, count:0};
+    lineCharges[num].total += lineTotal;
+    lineCharges[num].count++;
+
+    // Check for IDD in this block
+    if (/IDD\s+001\s+Call/i.test(block)) {
+      // Get "Total for IDD 001 Call X.XX"
+      const iddTotMatch = block.match(/Total\s+for\s+IDD\s+001\s+Call\s+([\d,]+\.\d{2})/i);
+      const iddAmt = iddTotMatch ? parseFloat(iddTotMatch[1].replace(/,/g,'')) : 0;
+      // Get country from first IDD call line
+      const countryMatch = block.match(/\b(Philippines|Malaysia|India|Indonesia|China|Australia|USA|United States|New Zealand|UK|Singapore)\b/i);
+      const country = countryMatch ? countryMatch[1] : '';
+      if (iddAmt > 0) iddRows.push({num, amount:iddAmt, country});
+    }
+  }
+
+  // Fallback: if no blocks found, use simple phone number scan
+  if (!Object.keys(lineCharges).length) {
+    const lines = text.split('\n');
+    const phoneRe = /\b([689]\d{7})\b/;
+    const amtRe = /\$?\s*([\d,]+\.\d{2})/g;
+    lines.forEach(line => {
+      const pm = line.match(phoneRe); if (!pm) return;
+      const num = pm[1];
+      const amounts = [...line.matchAll(amtRe)]; if (!amounts.length) return;
+      const amt = parseFloat(amounts[amounts.length-1][1].replace(/,/g,''));
+      if (amt <= 0 || amt > 5000) return;
+      if (!lineCharges[num]) lineCharges[num] = {num, total:0, count:0};
+      lineCharges[num].total += amt; lineCharges[num].count++;
+    });
+  }
+
+  if (!totalBill) totalBill = Object.values(lineCharges).reduce((s,r)=>s+r.total,0);
+  const iddTotal = iddRows.reduce((s,r)=>s+r.amount,0);
+  return {billMonth, totalBill, lineCharges, iddRows, iddTotal, gst};
 }
 
 // ── Parse CSV bill ──
@@ -322,7 +364,13 @@ const MONTH_ORDER = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct'
 function monthSortKey(m) {
   if (!m) return 9999;
   const low = m.toLowerCase();
-  for (let i = 0; i < MONTH_ORDER.length; i++) { if (low.includes(MONTH_ORDER[i])) { const yr = (m.match(/\d{2,4}/) || ['0'])[0]; return parseInt(yr) * 12 + i; } }
+  for (let i = 0; i < MONTH_ORDER.length; i++) {
+    if (low.includes(MONTH_ORDER[i])) {
+      const yr = (m.match(/\d{2,4}/) || ['0'])[0];
+      const yrNum = yr.length === 2 ? 2000 + parseInt(yr) : parseInt(yr);
+      return yrNum * 12 + i;
+    }
+  }
   return 9999;
 }
 
@@ -339,12 +387,16 @@ function analyseAll(staffRows, billDataArr) {
   billDataArr.forEach(bd => { const k = bd.billMonth || 'unknown'; seen[k] = bd; });
   billDataArr.forEach(bd => { const k = bd.billMonth || 'unknown'; if (seen[k] === bd) uniqueBills.push(bd); });
 
-  const monthlySummary = uniqueBills.map(bd => ({
-    month: bd.billMonth || 'Unknown',
-    total: bd.totalBill, sub: bd.totalBill - bd.iddTotal,
-    idd: bd.iddTotal, credits: 0, gst: 0,
-    lines: Object.keys(bd.lineCharges).length, notes: ''
-  }));
+  const monthlySummary = uniqueBills.map(bd => {
+    // Format month as "Feb-26" style
+    const moLabel = bd.billMonth ? bd.billMonth.replace(/(\w+)\s+20(\d{2})/, '$1-$2') : 'Unknown';
+    return {
+      month: moLabel,
+      total: bd.totalBill, sub: bd.totalBill - bd.iddTotal,
+      idd: bd.iddTotal, credits: 0, gst: bd.gst || 0,
+      lines: Object.keys(bd.lineCharges).length, notes: ''
+    };
+  });
 
   // Latest month for KPIs
   const latest = uniqueBills[uniqueBills.length - 1] || billDataArr[0];
