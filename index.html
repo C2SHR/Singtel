@@ -254,7 +254,15 @@ async function pdfToText(buf) {
 
 // ── Parse Singtel PDF bill ──
 function parseBillText(text) {
-  // ── Singtel BizVoice bill parser ──
+  // ── DEBUG: log first 2000 chars to console so we can see what PDF.js extracted ──
+  console.log('=== PDF TEXT SAMPLE ===');
+  console.log(text.slice(0, 3000));
+  console.log('=== IDD SEARCH ===');
+  const iddIdx = text.indexOf('IDD');
+  if (iddIdx > -1) console.log('IDD found at:', iddIdx, text.slice(iddIdx, iddIdx+200));
+  const bizIdx = text.indexOf('BIZVOICE');
+  if (bizIdx > -1) console.log('BIZVOICE found at:', bizIdx, text.slice(bizIdx, bizIdx+200));
+  console.log('=== END DEBUG ===');
   const moNames = {jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',
     jul:'July',aug:'August',sep:'September',oct:'October',nov:'November',dec:'December'};
   const moShort = {jan:'Jan',feb:'Feb',mar:'Mar',apr:'Apr',may:'May',jun:'Jun',
@@ -484,22 +492,38 @@ function analyseAll(staffRows, billDataArr) {
   const latestEnriched = Object.values(latest?.lineCharges || {}).map(lc => ({ ...lc, matched: !!staffMap[lc.num] }));
   const unmatched = latestEnriched.filter(r => !r.matched);
 
-  // IDD alerts across all months — group by staff
+  // IDD alerts across all months — group by staff, show ALL IDD users
   const iddByStaff = {};
   allIddRows.forEach(r => {
-    if (!iddByStaff[r.num]) iddByStaff[r.num] = { num: r.num, name: r.name, dept: r.dept, total: 0, months: [], countries: new Set() };
+    if (!iddByStaff[r.num]) iddByStaff[r.num] = { num: r.num, name: r.name, dept: r.dept, mgr: r.mgr, total: 0, months: [], countries: new Set() };
     iddByStaff[r.num].total += r.idd;
-    iddByStaff[r.num].months.push(r.month);
+    if (!iddByStaff[r.num].months.includes(r.month)) iddByStaff[r.num].months.push(r.month);
     if (r.country) iddByStaff[r.num].countries.add(r.country);
   });
   const hrAlerts = [];
   Object.values(iddByStaff).sort((a,b) => b.total - a.total).forEach(r => {
-    const level = r.total > 50 ? 'red' : r.months.length > 1 ? 'amber' : 'navy';
-    const status = r.total > 50 ? 'High IDD – verify' : r.months.length > 1 ? 'Recurring IDD' : 'New – monitor';
-    hrAlerts.push({ num: r.num, name: r.name || r.num, dept: r.dept, iddTotal: r.total, countries: [...r.countries].join('/') || '—', latest: r.months[r.months.length-1], status, level });
+    // All IDD users shown — severity based on amount and recurrence
+    let level, status;
+    if (r.total > 50) {
+      level = 'red'; status = 'High IDD — verify with manager';
+    } else if (r.months.length >= 3) {
+      level = 'amber'; status = 'Recurring IDD — ' + r.months.length + ' months';
+    } else if (r.months.length === 2) {
+      level = 'amber'; status = 'IDD in 2 months — monitor';
+    } else {
+      level = 'navy'; status = 'IDD user — SGD ' + r.total.toFixed(2);
+    }
+    hrAlerts.push({
+      num: r.num, name: r.name || r.num, dept: r.dept,
+      iddTotal: r.total,
+      countries: [...r.countries].join(' / ') || '—',
+      latest: r.months[r.months.length-1],
+      mgr: r.mgr || '—',
+      status, level
+    });
   });
-  if (unmatched.length) hrAlerts.push({ num: '—', name: `${unmatched.length} unmatched line(s)`, dept: '—', iddTotal: 0, countries: '—', latest: month, status: 'Not in Staff Master', level: 'navy' });
-  if (!hrAlerts.length) hrAlerts.push({ num: '—', name: 'No alerts', dept: 'All clear', iddTotal: 0, countries: '—', latest: month, status: 'All lines matched, no high IDD', level: 'green' });
+  if (unmatched.length) hrAlerts.push({ num: '—', name: `${unmatched.length} unmatched line(s)`, dept: '—', iddTotal: 0, countries: '—', latest: month, mgr: '—', status: 'Not in Staff Master — update listing', level: 'navy' });
+  if (!hrAlerts.length) hrAlerts.push({ num: '—', name: 'No IDD usage detected', dept: 'All clear', iddTotal: 0, countries: '—', latest: month, mgr: '—', status: 'No overseas calls this period', level: 'green' });
 
   return {
     month, hrAlerts, unmatched, monthlySummary, allMonths,
@@ -565,9 +589,9 @@ function dashPage(r) {
     <div class="card">
       <div class="card-title">${ico.warn} HR alerts — IDD usage requiring attention</div>
       <div class="tbl-wrap" style="max-height:190px">
-        <table><thead><tr><th>Phone no.</th><th>Staff name</th><th>Dept</th><th>IDD total (SGD)</th><th>Countries</th><th>Latest</th><th>Status</th></tr></thead>
+        <table><thead><tr><th>Phone no.</th><th>Staff name</th><th>Dept</th><th>Manager</th><th>IDD total (SGD)</th><th>Countries</th><th>Latest</th><th>Status</th></tr></thead>
         <tbody>${(r.hrAlerts||[]).map(a => `<tr class="${a.level==='red'?'idd-high':a.level==='amber'?'idd-flag':''}">
-          <td>${a.num}</td><td><strong>${a.name}</strong></td><td>${a.dept||'—'}</td>
+          <td>${a.num}</td><td><strong>${a.name}</strong></td><td>${a.dept||'—'}</td><td>${a.mgr||'—'}</td>
           <td>${a.iddTotal ? sgd(a.iddTotal) : '—'}</td><td>${a.countries||'—'}</td><td>${a.latest||'—'}</td>
           <td><span class="badge ${a.level==='red'?'b-red':a.level==='amber'?'b-amber':a.level==='green'?'b-green':'b-navy'}">${a.status}</span></td>
         </tr>`).join('')}</tbody></table>
