@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLaaS2SaaS — Singtel Telecom Dashboard</title>
+<script>
+// Dynamic loader - tries multiple CDN sources for SharePoint compatibility
+(function(){
+  var libs = [
+    { name:'XLSX',    urls:['https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js','https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'] },
+    { name:'Chart',   urls:['https://unpkg.com/chart.js@4.4.1/dist/chart.umd.js','https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js'] },
+    { name:'pdfjsLib',urls:['https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js','https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js'] },
+  ];
+  window._libsLoaded = 0;
+  window._libsNeeded = libs.length;
+  function tryLoad(lib, idx) {
+    if (idx >= lib.urls.length) { console.warn('All CDN sources failed for', lib.name); window._libsLoaded++; checkReady(); return; }
+    var s = document.createElement('script');
+    s.src = lib.urls[idx];
+    s.onload = function(){ window._libsLoaded++; checkReady(); };
+    s.onerror = function(){ tryLoad(lib, idx+1); };
+    document.head.appendChild(s);
+  }
+  function checkReady(){
+    if(window._libsLoaded >= window._libsNeeded){
+      if(typeof pdfjsLib !== 'undefined') pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+      if(typeof renderUpload === 'function') renderUpload();
+    }
+  }
+  libs.forEach(function(lib){ tryLoad(lib, 0); });
+})();
+</script>
+<style>
+  /* ── Reset & Base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, sans-serif; background: #f4f6f9; color: #1a1a2e; font-size: 13px; min-height: 100vh; }
+  a { color: #193e6b; }
+
+  /* ── Layout ── */
+  .app-wrap { max-width: 1280px; margin: 0 auto; padding: 1rem 1.25rem 2rem; }
+
+  /* ── Brand header ── */
+  .brand-header { background: #193e6b; border-radius: 10px; padding: 1rem 1.4rem; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  .bh-left { display: flex; flex-direction: column; gap: 2px; }
+  .bh-title { color: #fff; font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .bh-brand { background: rgba(179,161,37,.22); color: #e8d96a; font-size: 11px; padding: 2px 9px; border-radius: 20px; border: 1px solid rgba(179,161,37,.4); font-weight: 400; }
+  .bh-sub { color: #a8bdd4; font-size: 11px; }
+  .bh-meta { color: #7a9ec2; font-size: 10px; display: flex; align-items: center; gap: 5px; margin-top: 1px; }
+  .bh-right { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+  .period-badge { background: rgba(179,161,37,.22); color: #e8d96a; font-size: 11px; padding: 3px 11px; border-radius: 20px; border: 1px solid rgba(179,161,37,.35); }
+  .btn { background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.2); padding: 6px 13px; border-radius: 6px; font-size: 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; font-family: inherit; transition: background .15s; }
+  .btn:hover { background: rgba(179,161,37,.35); }
+  .btn-label { cursor: pointer; }
+
+  /* ── Gold rule ── */
+  .gold-rule { height: 3px; background: #B3A125; border-radius: 0 0 4px 4px; margin-bottom: 1rem; }
+
+  /* ── Nav tabs ── */
+  .nav { display: flex; gap: 3px; border-bottom: 2px solid #193e6b; margin-bottom: 1rem; flex-wrap: wrap; }
+  .nav-tab { padding: 7px 14px; border-radius: 6px 6px 0 0; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid #ccc; background: #eef1f6; color: #5a6a80; margin-bottom: -2px; display: flex; align-items: center; gap: 5px; transition: background .15s; }
+  .nav-tab:hover:not(.active) { background: #dce4f0; color: #193e6b; }
+  .nav-tab.active { background: #193e6b; color: #fff; border-color: #193e6b; }
+  .nav-tab svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+  /* ── KPI grid ── */
+  .kpi-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 1rem; }
+  .kpi { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: .75rem 1rem; position: relative; overflow: hidden; }
+  .kpi-bar { position: absolute; top: 0; left: 0; width: 4px; height: 100%; border-radius: 0; }
+  .kpi-label { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: .5px; margin-bottom: .2rem; }
+  .kpi-val { font-size: 20px; font-weight: 700; line-height: 1.1; }
+  .kpi-sub { font-size: 10px; color: #94a3b8; margin-top: .15rem; }
+
+  /* ── Cards ── */
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 1rem; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 1rem; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: .9rem 1rem; }
+  .card.full { grid-column: 1 / -1; }
+  .card-title { font-size: 11px; font-weight: 700; color: #193e6b; text-transform: uppercase; letter-spacing: .5px; margin-bottom: .65rem; display: flex; align-items: center; gap: 6px; }
+  .card-title svg { width: 14px; height: 14px; flex-shrink: 0; color: #193e6b; }
+
+  /* ── Alerts ── */
+  .alert-item { border-radius: 6px; padding: .45rem .75rem; margin-bottom: .4rem; display: flex; gap: .5rem; align-items: flex-start; }
+  .alert-item.red { background: #fef2f2; border: 1px solid #fca5a5; }
+  .alert-item.amber { background: #fdf6e0; border: 1px solid #d4bc40; }
+  .alert-item.navy { background: #eff6ff; border: 1px solid #93c5fd; }
+  .alert-item.green { background: #f0fdf4; border: 1px solid #86efac; }
+  .ai-icon { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+  .alert-item.red .ai-icon { color: #dc2626; }
+  .alert-item.amber .ai-icon { color: #92400e; }
+  .alert-item.navy .ai-icon { color: #193e6b; }
+  .alert-item.green .ai-icon { color: #15803d; }
+  .ai-t { font-size: 12px; font-weight: 600; }
+  .alert-item.red .ai-t { color: #dc2626; }
+  .alert-item.amber .ai-t { color: #92400e; }
+  .alert-item.navy .ai-t { color: #193e6b; }
+  .alert-item.green .ai-t { color: #15803d; }
+  .ai-s { font-size: 10px; margin-top: 1px; color: #64748b; }
+
+  /* ── Charts ── */
+  .chart-wrap { position: relative; width: 100%; }
+  .h150 { height: 150px; } .h170 { height: 170px; } .h200 { height: 200px; }
+
+  /* ── Tables ── */
+  .tbl-wrap { overflow-x: auto; max-height: 300px; overflow-y: auto; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  thead th { text-align: left; padding: 6px 9px; background: #193e6b; color: #fff; font-weight: 600; font-size: 10px; white-space: nowrap; position: sticky; top: 0; z-index: 1; }
+  tbody td { padding: 5px 9px; border-bottom: 1px solid #f1f5f9; color: #1e293b; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: #f8fafc; }
+  tbody tr.idd-high td { background: #fdf6e0; }
+  tbody tr.idd-flag td { background: #fefce8; }
+  tbody tr.pending td { opacity: .8; }
+
+  /* ── Badges ── */
+  .badge { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 9px; font-weight: 600; }
+  .b-red { background: #fef2f2; color: #dc2626; }
+  .b-amber { background: #fdf6e0; color: #92400e; }
+  .b-navy { background: #eff6ff; color: #193e6b; }
+  .b-green { background: #f0fdf4; color: #15803d; }
+  .b-gray { background: #f8fafc; color: #64748b; }
+  .b-gold { background: #fefce8; color: #92400e; }
+
+  /* ── Legend ── */
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: .5rem; }
+  .legend span { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #64748b; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+  /* ── Upload screen ── */
+  .upload-screen { max-width: 620px; margin: 3rem auto; padding: 0 1rem; }
+  .upload-logo { display: flex; align-items: center; justify-content: center; margin-bottom: 1.25rem; }
+  .logo-box { background: #193e6b; border-radius: 10px; padding: 10px 22px; display: inline-flex; align-items: center; gap: 10px; }
+  .logo-box .logo-text { color: #fff; font-size: 16px; font-weight: 700; }
+  .logo-box .logo-text b { color: #B3A125; }
+  .upload-heading { text-align: center; margin-bottom: 1.25rem; }
+  .upload-heading h2 { font-size: 16px; font-weight: 700; color: #193e6b; margin-bottom: .3rem; }
+  .upload-heading p { font-size: 12px; color: #64748b; }
+  .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 1.1rem; }
+  .upload-box { border: 2px dashed #cbd5e1; border-radius: 10px; padding: 1.75rem 1.1rem; text-align: center; cursor: pointer; transition: border-color .18s, background .18s; background: #f8fafc; }
+  .upload-box:hover, .upload-box.drag { border-color: #193e6b; background: #eff6ff; }
+  .upload-box.done { border-style: solid; border-color: #B3A125; background: #fefce8; }
+  .upload-box input { display: none; }
+  .ub-icon { font-size: 36px; margin-bottom: .6rem; display: block; }
+  .ub-icon.navy { color: #193e6b; } .ub-icon.gold { color: #B3A125; }
+  .upload-box.done .ub-icon { color: #B3A125; }
+  .ub-title { font-size: 13px; font-weight: 700; color: #1e293b; margin-bottom: .25rem; }
+  .ub-sub { font-size: 11px; color: #64748b; line-height: 1.5; }
+  .ub-done { font-size: 11px; color: #92400e; font-weight: 600; margin-top: .4rem; display: none; }
+  .upload-box.done .ub-done { display: block; }
+  .upload-box.done .ub-sub { display: none; }
+  .btn-go { display: block; width: 100%; padding: 11px; background: #193e6b; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; opacity: .35; pointer-events: none; transition: opacity .2s, background .2s; font-family: inherit; }
+  .btn-go.ready { opacity: 1; pointer-events: auto; }
+  .btn-go.ready:hover { background: #B3A125; color: #193e6b; }
+  .upload-note { text-align: center; font-size: 10px; color: #94a3b8; margin-top: .65rem; }
+  .upload-gold-bar { height: 4px; background: linear-gradient(90deg, #193e6b, #B3A125); border-radius: 4px; margin-bottom: 1.5rem; }
+
+  /* ── Spinner ── */
+  .spinner { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 300px; gap: 1rem; }
+  .spin { width: 32px; height: 32px; border: 3px solid #e2e8f0; border-top-color: #193e6b; border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Footer ── */
+  .dash-footer { text-align: center; font-size: 10px; color: #94a3b8; margin-top: 1.5rem; padding-top: .75rem; border-top: 1px solid #e2e8f0; }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+    .row2, .row3 { grid-template-columns: 1fr; }
+    .upload-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 600px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .brand-header { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+<div class="app-wrap" id="app"></div>
+
+<script>
+// ── PDF.js worker ──
+// Worker set by dynamic loader above
+
+// ── State ──
+let S = { tab: 'dashboard', result: null, prevData: null, files: { staffRaw: null, billRaw: null, staff: null } };
+let _charts = {};
+const app = document.getElementById('app');
+
+// ── Date ──
+const NOW = new Date();
+const dateStr = NOW.toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric' })
+  + ', ' + NOW.toLocaleTimeString('en-SG', { hour: '2-digit', minute: '2-digit' });
+
+// ── Formatters ──
+const f2 = n => Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+const sgd = n => 'SGD ' + f2(n);
+const sgdS = n => 'SGD ' + Math.round(n).toLocaleString();
+
+// ── SVG icons ──
+const ico = {
+  dash:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
+  cal:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+  globe:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
+  file:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+  xref:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3"/><line x1="12" y1="8" x2="12" y2="16"/><polyline points="8 12 12 8 16 12"/></svg>',
+  warn:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  chart:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
+  phone:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 1.27h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.91a16 16 0 0 0 6.09 6.09l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>',
+  upload:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+  check:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>',
+  info:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+  lock:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+  user:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  book:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+  invoice: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>',
+};
+
+// ── Parse Staff Master (Excel/CSV) ──
+function parseStaff(buf) {
+  const wb = XLSX.read(buf, { type: 'array' });
+  const sn = wb.SheetNames;
+  const target = sn.find(n => /staff|master|listing|telephone|directory/i.test(n)) || sn[0];
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[target], { defval: '' });
+  if (!rows.length) return [];
+  const k = Object.keys(rows[0]);
+  const numKey   = k.find(c => /phone|number|tel|mobile|line|ext/i.test(c)) || k[0];
+  const nameKey  = k.find(c => /name|staff|person|employee/i.test(c)) || k[1];
+  const deptKey  = k.find(c => /dept|department|division|team/i.test(c));
+  const mgrKey   = k.find(c => /manager|mgr|supervisor/i.test(c));
+  const locKey   = k.find(c => /location|loc|country|office/i.test(c));
+  const statusKey= k.find(c => /status|active|resigned/i.test(c));
+  return rows.map(r => ({
+    num:    String(r[numKey] || '').replace(/\D/g, '').replace(/^65/, '').slice(-8),
+    name:   r[nameKey] || '',
+    dept:   r[deptKey] || '',
+    mgr:    r[mgrKey] || '',
+    loc:    r[locKey] || '',
+    status: String(r[statusKey] || 'Active')
+  })).filter(r => r.num.length >= 7);
+}
+
+// ── PDF to text ──
+async function pdfToText(buf) {
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+  let t = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const pg = await pdf.getPage(i);
+    const c = await pg.getTextContent();
+    t += c.items.map(s => s.str).join(' ') + '\n';
+  }
+  return t;
+}
+
+// ── Parse Singtel PDF bill ──
+function parseBillText(text) {
+  const lines = text.split('\n');
+  const phoneRe = /\b([689]\d{7})\b/;
+  const amtRe   = /\$?\s*([\d,]+\.\d{2})/g;
+  let billMonth = '';
+  const mo2 = text.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d\d)\b/i);
+  if (mo2) billMonth = mo2[1] + ' ' + mo2[2];
+  if (!billMonth) { const m = text.match(/bill(?:ing)?\s*(?:period|month)[^\n]*?([A-Za-z]+\s*\d{4})/i); if (m) billMonth = m[1]; }
+  let totalBill = 0;
+  const tM = text.match(/(?:total\s+(?:amount\s+)?due|amount\s+payable|grand\s+total)[^\d]*(\d[\d,]*\.\d{2})/i);
+  if (tM) totalBill = parseFloat(tM[1].replace(/,/g, ''));
+  const lineCharges = {};
+  lines.forEach(line => {
+    const pm = line.match(phoneRe); if (!pm) return;
+    const num = pm[1]; const amounts = [...line.matchAll(amtRe)]; if (!amounts.length) return;
+    const amt = parseFloat(amounts[amounts.length - 1][1].replace(/,/g, ''));
+    if (amt <= 0 || amt > 5000) return;
+    if (!lineCharges[num]) lineCharges[num] = { num, total: 0, count: 0 };
+    lineCharges[num].total += amt; lineCharges[num].count++;
+  });
+  const iddRows = [];
+  const iS = text.match(/(?:idd|international\s+direct|overseas\s+call)([\s\S]{0,3000}?)(?:subtotal|total\s+amount|roaming|local\s+call)/i);
+  if (iS) iS[1].split('\n').forEach(line => {
+    const pm = line.match(phoneRe); const amounts = [...line.matchAll(amtRe)];
+    if (pm && amounts.length) { const amt = parseFloat(amounts[amounts.length - 1][1].replace(/,/g, '')); if (amt > 0) iddRows.push({ num: pm[1], amount: amt, country: '' }); }
+  });
+  let iddTotal = iddRows.reduce((s, r) => s + r.amount, 0);
+  if (!iddTotal) { const im = text.match(/(?:idd|international)[^\d\n]*(\d[\d,]*\.\d{2})/i); if (im) iddTotal = parseFloat(im[1].replace(/,/g, '')); }
+  if (!totalBill) totalBill = Object.values(lineCharges).reduce((s, r) => s + r.total, 0);
+  return { billMonth, totalBill, lineCharges, iddRows, iddTotal };
+}
+
+// ── Parse CSV bill ──
+function parseCSVBill(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return { billMonth: '', totalBill: 0, lineCharges: {}, iddRows: [], iddTotal: 0 };
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+  const headers = lines[0].split(delim).map(h => h.replace(/"/g, '').trim());
+  const rows = lines.slice(1).map(line => {
+    const cells = line.split(delim).map(c => c.replace(/"/g, '').trim());
+    const o = {}; headers.forEach((h, i) => o[h] = cells[i] || ''); return o;
+  });
+  const k = Object.keys(rows[0] || {});
+  const numKey  = k.find(c => /phone|number|tel|mobile|line/i.test(c));
+  const amtKey  = k.find(c => /amount|total|charge|cost/i.test(c));
+  const typeKey = k.find(c => /type|desc|category/i.test(c));
+  const moKey   = k.find(c => /month|period|date/i.test(c));
+  const lc = {}, iddRows = []; let billMonth = '', totalBill = 0;
+  rows.forEach(r => {
+    const num = String(r[numKey] || '').replace(/\D/g, '').slice(-8);
+    const amt = parseFloat(String(r[amtKey] || '0').replace(/[^0-9.]/g, '')) || 0;
+    const type = String(r[typeKey] || '').toLowerCase();
+    if (!billMonth && r[moKey]) billMonth = r[moKey];
+    totalBill += amt;
+    if (num.length >= 7) {
+      if (!lc[num]) lc[num] = { num, total: 0, count: 0 };
+      lc[num].total += amt; lc[num].count++;
+      if (/idd|international|overseas/i.test(type)) iddRows.push({ num, amount: amt, country: '' });
+    }
+  });
+  return { billMonth, totalBill, lineCharges: lc, iddRows, iddTotal: iddRows.reduce((s, r) => s + r.amount, 0) };
+}
+
+// ── Analyse & match ──
+function analyse(staffRows, billData) {
+  const staffMap = {};
+  staffRows.forEach(s => { if (s.num) staffMap[s.num] = s; });
+  const month = billData.billMonth || 'Current month';
+  const enriched = Object.values(billData.lineCharges).map(lc => {
+    const st = staffMap[lc.num] || null;
+    return { ...lc, name: st?.name || '', dept: st?.dept || '', mgr: st?.mgr || '', loc: st?.loc || '', matched: !!st };
+  });
+  const iddEnriched = billData.iddRows.map(r => {
+    const st = staffMap[r.num] || null;
+    return { ...r, name: st?.name || '', dept: st?.dept || '', mgr: st?.mgr || '' };
+  });
+  const unmatched = enriched.filter(r => !r.matched);
+  const hrAlerts = [];
+  iddEnriched.filter(r => r.amount > 50).forEach(r => hrAlerts.push({ num: r.num, name: r.name || r.num, dept: r.dept, iddTotal: r.amount, countries: r.country || '—', latest: month, status: 'High IDD – verify', level: 'red' }));
+  iddEnriched.filter(r => r.amount > 0 && r.amount <= 50).forEach(r => hrAlerts.push({ num: r.num, name: r.name || r.num, dept: r.dept, iddTotal: r.amount, countries: r.country || '—', latest: month, status: 'Monitor', level: 'amber' }));
+  if (unmatched.length) hrAlerts.push({ num: '—', name: `${unmatched.length} unmatched line(s)`, dept: '—', iddTotal: 0, countries: '—', latest: month, status: 'Not in Staff Master', level: 'navy' });
+  if (!hrAlerts.length) hrAlerts.push({ num: '—', name: 'No alerts', dept: 'All clear', iddTotal: 0, countries: '—', latest: month, status: 'All lines matched, no high IDD', level: 'green' });
+  const prevSummary = S.prevData?.summary || [];
+  const monthlySummary = [...prevSummary, { month, total: billData.totalBill, sub: billData.totalBill - billData.iddTotal, idd: billData.iddTotal, credits: 0, gst: 0, lines: Object.keys(billData.lineCharges).length, notes: '' }];
+  return {
+    month, enriched, iddEnriched, unmatched, hrAlerts,
+    totalBill: billData.totalBill, iddTotal: billData.iddTotal,
+    activeLines: staffRows.filter(s => /active/i.test(s.status) || !s.status).length,
+    unmatchedCount: unmatched.length,
+    monthlySummary,
+    billingRows: enriched.map(r => ({ month, num: r.num, name: r.name, sub: r.total - 0, idd: 0, other: 0, total: r.total, country: '', note: '' })),
+    iddRows: iddEnriched.map(r => ({ month, num: r.num, name: r.name, dept: r.dept, mgr: r.mgr, country: r.country || '', idd: r.amount, sub: 12, total: r.amount + 12, flag: r.amount > 50 ? 'High IDD' : '' })),
+    crossRef: enriched.sort((a,b) => b.total - a.total).map(r => ({ num: r.num, name: r.name, dept: r.dept, loc: r.loc, status: r.matched ? 'Hire' : 'Pending', may: r.total, total: r.total, iddTotal: 0, countries: '', flag: r.matched ? 'OK' : 'Pending' }))
+  };
+}
+
+// ── Chart helpers ──
+function destroyCharts() { Object.values(_charts).forEach(c => { try { c.destroy(); } catch(e) {} }); _charts = {}; }
+
+function baseChartOpts() {
+  return {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { color: '#94a3b8', font: { size: 11 }, autoSkip: false, maxRotation: 30 } },
+      y: { grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { color: '#94a3b8', font: { size: 11 }, callback: v => '$' + v }, beginAtZero: true }
+    }
+  };
+}
+
+// ── Nav HTML ──
+const TABS = [
+  { id: 'dashboard', icon: ico.dash,    label: 'Dashboard' },
+  { id: 'monthly',   icon: ico.cal,     label: 'Monthly summary' },
+  { id: 'idd',       icon: ico.globe,   label: 'IDD analysis' },
+  { id: 'billing',   icon: ico.file,    label: 'Billing detail' },
+  { id: 'xref',      icon: ico.xref,    label: 'Cross-reference' },
+];
+
+function navHTML(active) {
+  return TABS.map(t => `<div class="nav-tab${t.id === active ? ' active' : ''}" onclick="switchTab('${t.id}')">${t.icon}${t.label}</div>`).join('');
+}
+
+window.switchTab = function(t) { S.tab = t; if (S.result) renderDash(S.result, false); };
+
+// ── PAGE: DASHBOARD ──
+function dashPage(r) {
+  const mo = (r.monthlySummary || []).map(m => m.month);
+  const sp = (r.monthlySummary || []).map(m => m.total);
+  const id = (r.monthlySummary || []).map(m => m.idd);
+  const totalAll = sp.reduce((a, b) => a + b, 0);
+  return `
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-bar" style="background:#193e6b"></div><div class="kpi-label">Bill total</div><div class="kpi-val" style="color:#193e6b">${sgdS(r.totalBill)}</div><div class="kpi-sub">${r.month}</div></div>
+    <div class="kpi"><div class="kpi-bar" style="background:#B3A125"></div><div class="kpi-label">IDD charges</div><div class="kpi-val" style="color:#92400e">${sgd(r.iddTotal)}</div><div class="kpi-sub">Overseas calls</div></div>
+    <div class="kpi"><div class="kpi-bar" style="background:#15803d"></div><div class="kpi-label">Staff lines</div><div class="kpi-val" style="color:#15803d">${r.activeLines}</div><div class="kpi-sub">In master listing</div></div>
+    <div class="kpi"><div class="kpi-bar" style="background:#dc2626"></div><div class="kpi-label">Unmatched</div><div class="kpi-val" style="color:#dc2626">${r.unmatchedCount}</div><div class="kpi-sub">Not in staff master</div></div>
+    <div class="kpi"><div class="kpi-bar" style="background:#534AB7"></div><div class="kpi-label">Total (all months)</div><div class="kpi-val" style="color:#534AB7">${sgdS(totalAll)}</div><div class="kpi-sub">${mo[0]||''} – ${r.month}</div></div>
+  </div>
+  <div class="row2">
+    <div class="card">
+      <div class="card-title">${ico.warn} HR alerts — IDD usage requiring attention</div>
+      <div class="tbl-wrap" style="max-height:190px">
+        <table><thead><tr><th>Phone no.</th><th>Staff name</th><th>Dept</th><th>IDD total (SGD)</th><th>Countries</th><th>Latest</th><th>Status</th></tr></thead>
+        <tbody>${(r.hrAlerts||[]).map(a => `<tr class="${a.level==='red'?'idd-high':a.level==='amber'?'idd-flag':''}">
+          <td>${a.num}</td><td><strong>${a.name}</strong></td><td>${a.dept||'—'}</td>
+          <td>${a.iddTotal ? sgd(a.iddTotal) : '—'}</td><td>${a.countries||'—'}</td><td>${a.latest||'—'}</td>
+          <td><span class="badge ${a.level==='red'?'b-red':a.level==='amber'?'b-amber':a.level==='green'?'b-green':'b-navy'}">${a.status}</span></td>
+        </tr>`).join('')}</tbody></table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">${ico.chart} Monthly bill trend (SGD)</div>
+      <div class="legend"><span><span class="legend-dot" style="background:#193e6b"></span>Previous months</span><span><span class="legend-dot" style="background:#B3A125"></span>Latest month</span></div>
+      <div class="chart-wrap h150"><canvas id="c-spend" aria-label="Monthly bill trend"></canvas></div>
+    </div>
+  </div>
+  <div class="row2">
+    <div class="card">
+      <div class="card-title">${ico.globe} IDD charges trend (SGD)</div>
+      <div class="chart-wrap h150"><canvas id="c-idd" aria-label="IDD trend"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">${ico.chart} Spend breakdown — ${r.month}</div>
+      <div class="chart-wrap h150"><canvas id="c-pie" aria-label="Spend breakdown"></canvas></div>
+    </div>
+  </div>
+  <script>
+  (function(){
+    var mo=${JSON.stringify(mo)},sp=${JSON.stringify(sp)},id=${JSON.stringify(id)};
+    var base={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{grid:{color:'rgba(0,0,0,0.05)'},ticks:{color:'#94a3b8',font:{size:11},autoSkip:false,maxRotation:30}},
+              y:{grid:{color:'rgba(0,0,0,0.05)'},ticks:{color:'#94a3b8',font:{size:11},callback:function(v){return'$'+v}},beginAtZero:true}}};
+    var sc=document.getElementById('c-spend'),ic=document.getElementById('c-idd'),pc=document.getElementById('c-pie');
+    if(sc&&window.Chart){if(window.__c_spend)window.__c_spend.destroy();
+      window.__c_spend=new Chart(sc,{type:'bar',data:{labels:mo,datasets:[{data:sp,backgroundColor:mo.map(function(_,i){return i===mo.length-1?'#B3A125':'#193e6b';}),borderRadius:4,borderSkipped:false}]},options:{...base,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(v){return'SGD '+v.raw.toFixed(2)}}}}}});}
+    if(ic&&window.Chart){if(window.__c_idd)window.__c_idd.destroy();
+      window.__c_idd=new Chart(ic,{type:'line',data:{labels:mo,datasets:[{data:id,borderColor:'#B3A125',backgroundColor:'rgba(179,161,37,0.1)',fill:true,tension:.35,pointBackgroundColor:'#193e6b',pointBorderColor:'#B3A125',pointBorderWidth:2,pointRadius:5}]},options:{...base,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(v){return'SGD '+v.raw.toFixed(2)}}}}}});}
+    if(pc&&window.Chart){if(window.__c_pie)window.__c_pie.destroy();
+      var sub=${r.totalBill - r.iddTotal};var idd=${r.iddTotal};
+      window.__c_pie=new Chart(pc,{type:'doughnut',data:{labels:['Subscription','IDD'],datasets:[{data:[Math.max(sub,0),idd],backgroundColor:['#193e6b','#B3A125'],borderWidth:2,borderColor:'#fff'}]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,position:'bottom',labels:{font:{size:11},color:'#64748b',boxWidth:12,padding:10}},tooltip:{callbacks:{label:function(v){return v.label+': SGD '+v.raw.toFixed(2);}}}}}});}
+  })();
+  <\/script>`;
+}
+
+// ── PAGE: MONTHLY SUMMARY ──
+function monthlyPage(r) {
+  const rows = r.monthlySummary || [];
+  const tot = rows.reduce((a, row) => ({ total: a.total+row.total, sub: a.sub+(row.sub||0), idd: a.idd+row.idd, credits: a.credits+(row.credits||0), gst: a.gst+(row.gst||0) }), { total:0,sub:0,idd:0,credits:0,gst:0 });
+  return `
+  <div class="card full">
+    <div class="card-title">${ico.cal} Monthly bill summary — ${rows[0]?.month||''} to ${rows[rows.length-1]?.month||''}</div>
+    <div class="tbl-wrap">
+      <table><thead><tr><th>Month</th><th>Bill total (SGD)</th><th>Subscription (SGD)</th><th>IDD charges (SGD)</th><th>Credits/Rebates (SGD)</th><th>GST (SGD)</th><th># Lines</th><th>Notes</th></tr></thead>
+      <tbody>
+        ${rows.map(row => `<tr>
+          <td><strong>${row.month}</strong></td><td><strong>${f2(row.total)}</strong></td>
+          <td>${row.sub ? f2(row.sub) : '—'}</td>
+          <td>${row.idd ? `<span class="badge b-amber">${f2(row.idd)}</span>` : '—'}</td>
+          <td style="color:#15803d">${row.credits ? f2(row.credits) : '—'}</td>
+          <td>${row.gst ? f2(row.gst) : '—'}</td><td>${row.lines||'—'}</td>
+          <td style="font-size:10px;color:#64748b;white-space:normal;max-width:200px">${row.notes||''}</td>
+        </tr>`).join('')}
+        <tr style="background:#f8fafc;font-weight:700">
+          <td>TOTAL</td><td>${f2(tot.total)}</td><td>${tot.sub?f2(tot.sub):'—'}</td>
+          <td><span class="badge b-amber">${f2(tot.idd)}</span></td>
+          <td style="color:#15803d">${tot.credits?f2(tot.credits):'—'}</td>
+          <td>${tot.gst?f2(tot.gst):'—'}</td><td></td><td></td>
+        </tr>
+      </tbody></table>
+    </div>
+  </div>
+  <div class="row2" style="margin-top:10px">
+    <div class="card"><div class="card-title">${ico.chart} Bill total by month</div>
+      <div class="chart-wrap h170"><canvas id="c-mo-sp" aria-label="Monthly totals"></canvas></div></div>
+    <div class="card"><div class="card-title">${ico.globe} IDD charges by month</div>
+      <div class="chart-wrap h170"><canvas id="c-mo-id" aria-label="Monthly IDD"></canvas></div></div>
+  </div>
+  <script>
+  (function(){
+    var mo=${JSON.stringify(rows.map(r=>r.month))},sp=${JSON.stringify(rows.map(r=>r.total))},id=${JSON.stringify(rows.map(r=>r.idd))};
+    var base={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{grid:{color:'rgba(0,0,0,0.05)'},ticks:{color:'#94a3b8',font:{size:11},autoSkip:false}},
+              y:{grid:{color:'rgba(0,0,0,0.05)'},ticks:{color:'#94a3b8',font:{size:11},callback:function(v){return'$'+v}},beginAtZero:true}}};
+    var sc=document.getElementById('c-mo-sp'),ic=document.getElementById('c-mo-id');
+    if(sc&&window.Chart){if(window.__c_mosp)window.__c_mosp.destroy();
+      window.__c_mosp=new Chart(sc,{type:'bar',data:{labels:mo,datasets:[{data:sp,backgroundColor:mo.map(function(_,i){return i===mo.length-1?'#B3A125':'#193e6b';}),borderRadius:4,borderSkipped:false}]},options:base});}
+    if(ic&&window.Chart){if(window.__c_moid)window.__c_moid.destroy();
+      window.__c_moid=new Chart(ic,{type:'line',data:{labels:mo,datasets:[{data:id,borderColor:'#B3A125',backgroundColor:'rgba(179,161,37,0.12)',fill:true,tension:.35,pointBackgroundColor:'#193e6b',pointBorderColor:'#B3A125',pointBorderWidth:2,pointRadius:5}]},options:base});}
+  })();
+  <\/script>`;
+}
+
+// ── PAGE: IDD ANALYSIS ──
+function iddPage(r) {
+  const rows = r.iddRows || [];
+  return `
+  <div class="card full">
+    <div class="card-title">${ico.globe} IDD calls analysis — all months &nbsp;<span style="font-size:10px;font-weight:400;color:#64748b;text-transform:none">Overseas calls requiring HR verification</span></div>
+    <p style="font-size:10px;color:#64748b;margin-bottom:.65rem">Rows highlighted amber = high value. Check with line user's manager for business justification.</p>
+    <div class="legend" style="margin-bottom:.6rem">
+      <span><span class="legend-dot" style="background:#fdf6e0;border:1px solid #d4bc40"></span>High IDD flagged</span>
+      <span><span class="legend-dot" style="background:#fefce8;border:1px solid #e8d96a"></span>IDD detected</span>
+    </div>
+    <div class="tbl-wrap">
+      <table><thead><tr><th>Bill month</th><th>Phone number</th><th>Staff name</th><th>Department</th><th>Manager</th><th>Country called</th><th>IDD charge (SGD)</th><th>Sub charge (SGD)</th><th>Total line (SGD)</th><th>Flag</th></tr></thead>
+      <tbody>${rows.map(row => `<tr class="${row.flag==='High IDD'?'idd-high':row.idd>0?'idd-flag':''}">
+        <td>${row.month||'—'}</td><td>${row.num||'—'}</td><td><strong>${row.name||'—'}</strong></td>
+        <td>${row.dept||'—'}</td><td>${row.mgr||'—'}</td><td>${row.country||'—'}</td>
+        <td>${row.idd ? `<span class="badge ${row.idd>30?'b-red':'b-amber'}">${f2(row.idd)}</span>` : '—'}</td>
+        <td>${f2(row.sub||12)}</td><td><strong>${f2(row.total||0)}</strong></td>
+        <td style="font-size:10px;color:#dc2626">${row.flag||''}</td>
+      </tr>`).join('')}</tbody></table>
+    </div>
+  </div>`;
+}
+
+// ── PAGE: BILLING DETAIL ──
+function billingPage(r) {
+  const rows = r.billingRows || [];
+  return `
+  <div class="card full">
+    <div class="card-title">${ico.invoice} Singtel billing detail &nbsp;<span style="font-size:10px;font-weight:400;color:#64748b;text-transform:none">Raw billing data per line per month</span></div>
+    <p style="font-size:10px;color:#64748b;margin-bottom:.65rem">IDD rows highlighted. Staff name matched from Staff Master.</p>
+    <div class="tbl-wrap">
+      <table><thead><tr><th>Bill month</th><th>Phone number</th><th>Staff name</th><th>Sub charge (SGD)</th><th>IDD charge (SGD)</th><th>Other/Credit (SGD)</th><th>Total charge (SGD)</th><th>IDD country</th><th>Notes</th></tr></thead>
+      <tbody>${rows.map(row => `<tr class="${(row.idd||0)>0?'idd-flag':''}">
+        <td>${row.month||'—'}</td><td>${row.num||'—'}</td><td>${row.name||'—'}</td>
+        <td>${row.sub ? f2(row.sub) : '—'}</td>
+        <td>${row.idd ? `<span class="badge b-amber">${f2(row.idd)}</span>` : '—'}</td>
+        <td style="color:#15803d">${row.other ? f2(row.other) : '—'}</td>
+        <td><strong>${f2(row.total||0)}</strong></td>
+        <td>${row.country||'—'}</td>
+        <td style="font-size:10px;color:#64748b">${row.note||''}</td>
+      </tr>`).join('')}</tbody></table>
+    </div>
+  </div>`;
+}
+
+// ── PAGE: CROSS-REFERENCE ──
+function xrefPage(r) {
+  const rows = r.crossRef || [];
+  return `
+  <div class="card full">
+    <div class="card-title">${ico.xref} Staff ↔ billing cross-reference &nbsp;<span style="font-size:10px;font-weight:400;color:#64748b;text-transform:none">Each number matched to staff with spend summary</span></div>
+    <p style="font-size:10px;color:#64748b;margin-bottom:.65rem">Sorted by total spend (high to low). Update Staff Master to refresh staff details.</p>
+    <div class="tbl-wrap">
+      <table><thead><tr><th>Phone number</th><th>Staff name</th><th>Department</th><th>Location</th><th>Status</th><th>Feb-26 (SGD)</th><th>Mar-26 (SGD)</th><th>Apr-26 (SGD)</th><th>May-26 (SGD)</th><th>Total (SGD)</th><th>IDD total (SGD)</th><th>IDD countries</th><th>HR flag</th></tr></thead>
+      <tbody>${rows.map(row => `<tr class="${row.flag==='Pending'?'pending':''}">
+        <td>${row.num||'—'}</td><td><strong>${row.name||'—'}</strong></td><td>${row.dept||'—'}</td>
+        <td>${row.loc||'—'}</td>
+        <td><span class="badge ${row.status==='Hire'?'b-green':row.status==='Pending'?'b-amber':'b-gray'}">${row.status||'—'}</span></td>
+        <td>${row.feb ? f2(row.feb) : '—'}</td><td>${row.mar ? f2(row.mar) : '—'}</td>
+        <td>${row.apr ? f2(row.apr) : '—'}</td><td>${row.may ? f2(row.may) : '—'}</td>
+        <td><strong>${f2(row.total||0)}</strong></td>
+        <td>${row.iddTotal ? `<span class="badge b-amber">${f2(row.iddTotal)}</span>` : '—'}</td>
+        <td>${row.countries||'—'}</td>
+        <td>${row.flag==='IDD'?'<span class="badge b-red">IDD</span>':row.flag==='Pending'?'<span class="badge b-amber">Pending</span>':'<span class="badge b-green">OK</span>'}</td>
+      </tr>`).join('')}</tbody></table>
+    </div>
+  </div>`;
+}
+
+function pageContent(r) {
+  if (S.tab === 'dashboard') return dashPage(r);
+  if (S.tab === 'monthly')   return monthlyPage(r);
+  if (S.tab === 'idd')       return iddPage(r);
+  if (S.tab === 'billing')   return billingPage(r);
+  if (S.tab === 'xref')      return xrefPage(r);
+  return '';
+}
+
+// ── Render full dashboard ──
+function renderDash(r, resetTab) {
+  if (resetTab) S.tab = 'dashboard';
+  S.result = r;
+  app.innerHTML = `
+  <div class="brand-header">
+    <div class="bh-left">
+      <div class="bh-title">${ico.phone} Lithan Academy &nbsp;<span class="bh-brand">CLaaS2SaaS</span></div>
+      <div class="bh-sub">Singtel Telecom Dashboard &nbsp;·&nbsp; ${r.month} &nbsp;·&nbsp; ${r.activeLines} staff lines</div>
+      <div class="bh-meta">${ico.cal} Created: ${dateStr}</div>
+    </div>
+    <div class="bh-right">
+      <span class="period-badge">${r.month}</span>
+      <label class="btn btn-label" title="Upload next month's Singtel bill">
+        ${ico.upload} New bill
+        <input type="file" accept=".pdf,.csv" style="display:none" onchange="handleNewBill(event)">
+      </label>
+      <button class="btn" onclick="renderUpload()">${ico.refresh} Reset</button>
+    </div>
+  </div>
+  <div class="gold-rule"></div>
+  <div class="nav">${navHTML(S.tab)}</div>
+  <div id="page-content">${pageContent(r)}</div>
+  <div class="dash-footer">
+    Lithan Academy Pte. Ltd. &nbsp;·&nbsp; CLaaS2SaaS Singtel Telecom Dashboard &nbsp;·&nbsp; Generated ${dateStr} &nbsp;·&nbsp; Data processed locally in your browser
+  </div>`;
+  const pc = document.getElementById('page-content');
+  if (pc) { pc.querySelectorAll('script').forEach(s => { const ns = document.createElement('script'); ns.textContent = s.textContent; s.parentNode.replaceChild(ns, s); }); }
+}
+
+// ── New bill (keep staff master) ──
+window.handleNewBill = async function(e) {
+  const file = e.target.files[0]; if (!file || !S.files.staff) return;
+  if (S.result?.monthlySummary) S.prevData = { summary: S.result.monthlySummary };
+  app.innerHTML = `<div class="spinner"><div class="spin"></div><div style="font-size:13px;color:#64748b">Reading ${file.name}…</div></div>`;
+  try {
+    const buf = await file.arrayBuffer();
+    const bd = file.name.toLowerCase().endsWith('.csv') ? parseCSVBill(new TextDecoder().decode(buf)) : parseBillText(await pdfToText(buf));
+    renderDash(analyse(S.files.staff, bd), true);
+  } catch(err) { showErr(err.message); }
+};
+
+// ── Process both files ──
+async function processFiles() {
+  app.innerHTML = `<div class="spinner"><div class="spin"></div><div style="font-size:13px;color:#64748b">Matching staff to bill…</div></div>`;
+  try {
+    const [sb, bb] = await Promise.all([S.files.staffRaw.arrayBuffer(), S.files.billRaw.arrayBuffer()]);
+    const staffRows = parseStaff(new Uint8Array(sb));
+    S.files.staff = staffRows;
+    const bd = S.files.billRaw.name.toLowerCase().endsWith('.csv') ? parseCSVBill(new TextDecoder().decode(bb)) : parseBillText(await pdfToText(new Uint8Array(bb)));
+    renderDash(analyse(staffRows, bd), true);
+  } catch(err) { showErr(err.message); }
+}
+
+function showErr(msg) {
+  app.innerHTML = `<div class="spinner"><div style="font-size:28px;color:#dc2626">&#9888;</div><div style="font-size:13px;color:#64748b;max-width:400px;text-align:center">${msg||'Could not read files.'}</div><button onclick="renderUpload()" style="padding:8px 20px;background:#193e6b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit">Try again</button></div>`;
+}
+
+// ── Upload screen ──
+function renderUpload() {
+  S = { tab: 'dashboard', result: null, prevData: null, files: { staffRaw: null, billRaw: null, staff: null } };
+  app.innerHTML = `
+  <div class="upload-screen">
+    <div class="upload-gold-bar"></div>
+    <div class="upload-logo"><div class="logo-box"><span class="logo-text">CLaa<b>S2</b>SaaS &nbsp;·&nbsp; Singtel Dashboard</span></div></div>
+    <div class="upload-heading">
+      <h2>Upload your files to generate the dashboard</h2>
+      <p>Two files needed — Staff Telephone Listing and this month's Singtel bill</p>
+    </div>
+    <div class="upload-grid">
+      <label for="f-staff"><div class="upload-box" id="box-staff">
+        <input type="file" id="f-staff" accept=".xlsx,.xls,.csv" onchange="onFile(event,'staff')">
+        <span class="ub-icon navy">${ico.book}</span>
+        <div class="ub-title">Staff Master Telephone Listing</div>
+        <div class="ub-sub">Excel (.xlsx) or CSV<br>Names &nbsp;·&nbsp; Departments &nbsp;·&nbsp; Managers &nbsp;·&nbsp; Phone numbers</div>
+        <div class="ub-done" id="staff-done"></div>
+      </div></label>
+      <label for="f-bill"><div class="upload-box" id="box-bill">
+        <input type="file" id="f-bill" accept=".pdf,.csv" onchange="onFile(event,'bill')">
+        <span class="ub-icon gold">${ico.invoice}</span>
+        <div class="ub-title">Singtel Monthly Bill</div>
+        <div class="ub-sub">PDF or CSV<br>Charges &nbsp;·&nbsp; IDD &nbsp;·&nbsp; Line items extracted automatically</div>
+        <div class="ub-done" id="bill-done"></div>
+      </div></label>
+    </div>
+    <button class="btn-go" id="btn-go" onclick="processFiles()">${ico.chart}&nbsp; Generate dashboard</button>
+    <p class="upload-note">${ico.lock}&nbsp; Files processed entirely in your browser — nothing is sent to any server</p>
+  </div>`;
+  ['staff','bill'].forEach(type => {
+    const box = document.getElementById('box-' + type);
+    box.addEventListener('dragover', e => { e.preventDefault(); box.classList.add('drag'); });
+    box.addEventListener('dragleave', () => box.classList.remove('drag'));
+    box.addEventListener('drop', e => { e.preventDefault(); box.classList.remove('drag'); const f = e.dataTransfer.files[0]; if (f) markFile(f, type); });
+  });
+}
+
+window.onFile = function(e, type) { const f = e.target.files[0]; if (f) markFile(f, type); };
+
+function markFile(f, type) {
+  if (type === 'staff') S.files.staffRaw = f; else S.files.billRaw = f;
+  document.getElementById('box-' + type).classList.add('done');
+  document.getElementById(type + '-done').textContent = '✓ ' + f.name;
+  if (S.files.staffRaw && S.files.billRaw) document.getElementById('btn-go').classList.add('ready');
+}
+
+// renderUpload called by dynamic loader
+</script>
+</body>
+</html>
