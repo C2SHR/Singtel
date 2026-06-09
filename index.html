@@ -182,7 +182,7 @@
 // Worker set by dynamic loader above
 
 // ── State ──
-let S = { tab: 'dashboard', result: null, prevData: null, files: { staffRaw: null, billRaw: null, staff: null } };
+let S = { tab: 'dashboard', result: null, prevData: null, files: { staffRaw: null, billRaws: [], staff: null } };
 let _charts = {};
 const app = document.getElementById('app');
 
@@ -317,37 +317,104 @@ function parseCSVBill(text) {
 }
 
 // ── Analyse & match ──
-function analyse(staffRows, billData) {
+// ── Month sort order ──
+const MONTH_ORDER = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+function monthSortKey(m) {
+  if (!m) return 9999;
+  const low = m.toLowerCase();
+  for (let i = 0; i < MONTH_ORDER.length; i++) { if (low.includes(MONTH_ORDER[i])) { const yr = (m.match(/\d{2,4}/) || ['0'])[0]; return parseInt(yr) * 12 + i; } }
+  return 9999;
+}
+
+// ── Analyse multiple bills merged ──
+function analyseAll(staffRows, billDataArr) {
   const staffMap = {};
   staffRows.forEach(s => { if (s.num) staffMap[s.num] = s; });
-  const month = billData.billMonth || 'Current month';
-  const enriched = Object.values(billData.lineCharges).map(lc => {
-    const st = staffMap[lc.num] || null;
-    return { ...lc, name: st?.name || '', dept: st?.dept || '', mgr: st?.mgr || '', loc: st?.loc || '', matched: !!st };
+
+  // Sort bills by month
+  billDataArr.sort((a, b) => monthSortKey(a.billMonth) - monthSortKey(b.billMonth));
+
+  // Deduplicate by month (keep last if same month uploaded twice)
+  const seen = {}, uniqueBills = [];
+  billDataArr.forEach(bd => { const k = bd.billMonth || 'unknown'; seen[k] = bd; });
+  billDataArr.forEach(bd => { const k = bd.billMonth || 'unknown'; if (seen[k] === bd) uniqueBills.push(bd); });
+
+  const monthlySummary = uniqueBills.map(bd => ({
+    month: bd.billMonth || 'Unknown',
+    total: bd.totalBill, sub: bd.totalBill - bd.iddTotal,
+    idd: bd.iddTotal, credits: 0, gst: 0,
+    lines: Object.keys(bd.lineCharges).length, notes: ''
+  }));
+
+  // Latest month for KPIs
+  const latest = uniqueBills[uniqueBills.length - 1] || billDataArr[0];
+  const month = latest?.billMonth || 'Current month';
+
+  // All billing rows across all months
+  const allBillingRows = [], allIddRows = [];
+  const crossRefMap = {};
+
+  uniqueBills.forEach(bd => {
+    const mo = bd.billMonth || '—';
+    Object.values(bd.lineCharges).forEach(lc => {
+      const st = staffMap[lc.num] || null;
+      const row = { month: mo, num: lc.num, name: st?.name || '', dept: st?.dept || '', mgr: st?.mgr || '', loc: st?.loc || '', sub: lc.total, idd: 0, other: 0, total: lc.total, country: '', note: '', matched: !!st };
+      allBillingRows.push(row);
+      if (!crossRefMap[lc.num]) crossRefMap[lc.num] = { num: lc.num, name: st?.name || '', dept: st?.dept || '', loc: st?.loc || '', status: st ? 'Hire' : 'Pending', months: {}, total: 0, iddTotal: 0, countries: new Set(), flag: st ? 'OK' : 'Pending' };
+      crossRefMap[lc.num].months[mo] = (crossRefMap[lc.num].months[mo] || 0) + lc.total;
+      crossRefMap[lc.num].total += lc.total;
+    });
+    bd.iddRows.forEach(r => {
+      const st = staffMap[r.num] || null;
+      allIddRows.push({ month: mo, num: r.num, name: st?.name || '', dept: st?.dept || '', mgr: st?.mgr || '', country: r.country || '', idd: r.amount, sub: 12, total: r.amount + 12, flag: r.amount > 50 ? 'High IDD' : '' });
+      if (crossRefMap[r.num]) { crossRefMap[r.num].iddTotal += r.amount; if (r.country) crossRefMap[r.num].countries.add(r.country); crossRefMap[r.num].flag = 'IDD'; }
+    });
   });
-  const iddEnriched = billData.iddRows.map(r => {
-    const st = staffMap[r.num] || null;
-    return { ...r, name: st?.name || '', dept: st?.dept || '', mgr: st?.mgr || '' };
+
+  // Cross-ref: convert months map to named columns
+  const allMonths = monthlySummary.map(m => m.month);
+  const crossRef = Object.values(crossRefMap).sort((a,b) => b.total - a.total).map(r => ({
+    ...r, countries: [...r.countries].join('/') || '',
+    ...Object.fromEntries(allMonths.map(m => [m, r.months[m] || 0]))
+  }));
+
+  // Unmatched lines (latest month)
+  const latestEnriched = Object.values(latest?.lineCharges || {}).map(lc => ({ ...lc, matched: !!staffMap[lc.num] }));
+  const unmatched = latestEnriched.filter(r => !r.matched);
+
+  // IDD alerts across all months — group by staff
+  const iddByStaff = {};
+  allIddRows.forEach(r => {
+    if (!iddByStaff[r.num]) iddByStaff[r.num] = { num: r.num, name: r.name, dept: r.dept, total: 0, months: [], countries: new Set() };
+    iddByStaff[r.num].total += r.idd;
+    iddByStaff[r.num].months.push(r.month);
+    if (r.country) iddByStaff[r.num].countries.add(r.country);
   });
-  const unmatched = enriched.filter(r => !r.matched);
   const hrAlerts = [];
-  iddEnriched.filter(r => r.amount > 50).forEach(r => hrAlerts.push({ num: r.num, name: r.name || r.num, dept: r.dept, iddTotal: r.amount, countries: r.country || '—', latest: month, status: 'High IDD – verify', level: 'red' }));
-  iddEnriched.filter(r => r.amount > 0 && r.amount <= 50).forEach(r => hrAlerts.push({ num: r.num, name: r.name || r.num, dept: r.dept, iddTotal: r.amount, countries: r.country || '—', latest: month, status: 'Monitor', level: 'amber' }));
+  Object.values(iddByStaff).sort((a,b) => b.total - a.total).forEach(r => {
+    const level = r.total > 50 ? 'red' : r.months.length > 1 ? 'amber' : 'navy';
+    const status = r.total > 50 ? 'High IDD – verify' : r.months.length > 1 ? 'Recurring IDD' : 'New – monitor';
+    hrAlerts.push({ num: r.num, name: r.name || r.num, dept: r.dept, iddTotal: r.total, countries: [...r.countries].join('/') || '—', latest: r.months[r.months.length-1], status, level });
+  });
   if (unmatched.length) hrAlerts.push({ num: '—', name: `${unmatched.length} unmatched line(s)`, dept: '—', iddTotal: 0, countries: '—', latest: month, status: 'Not in Staff Master', level: 'navy' });
   if (!hrAlerts.length) hrAlerts.push({ num: '—', name: 'No alerts', dept: 'All clear', iddTotal: 0, countries: '—', latest: month, status: 'All lines matched, no high IDD', level: 'green' });
-  const prevSummary = S.prevData?.summary || [];
-  const monthlySummary = [...prevSummary, { month, total: billData.totalBill, sub: billData.totalBill - billData.iddTotal, idd: billData.iddTotal, credits: 0, gst: 0, lines: Object.keys(billData.lineCharges).length, notes: '' }];
+
   return {
-    month, enriched, iddEnriched, unmatched, hrAlerts,
-    totalBill: billData.totalBill, iddTotal: billData.iddTotal,
+    month, hrAlerts, unmatched, monthlySummary, allMonths,
+    totalBill: latest?.totalBill || 0,
+    iddTotal: monthlySummary.reduce((s,m) => s + m.idd, 0),
     activeLines: staffRows.filter(s => /active/i.test(s.status) || !s.status).length,
     unmatchedCount: unmatched.length,
-    monthlySummary,
-    billingRows: enriched.map(r => ({ month, num: r.num, name: r.name, sub: r.total - 0, idd: 0, other: 0, total: r.total, country: '', note: '' })),
-    iddRows: iddEnriched.map(r => ({ month, num: r.num, name: r.name, dept: r.dept, mgr: r.mgr, country: r.country || '', idd: r.amount, sub: 12, total: r.amount + 12, flag: r.amount > 50 ? 'High IDD' : '' })),
-    crossRef: enriched.sort((a,b) => b.total - a.total).map(r => ({ num: r.num, name: r.name, dept: r.dept, loc: r.loc, status: r.matched ? 'Hire' : 'Pending', may: r.total, total: r.total, iddTotal: 0, countries: '', flag: r.matched ? 'OK' : 'Pending' }))
+    enriched: latestEnriched,
+    iddEnriched: allIddRows.filter(r => r.month === month),
+    billingRows: allBillingRows,
+    iddRows: allIddRows,
+    crossRef
   };
 }
+
+// Keep single-bill wrapper for compatibility
+function analyse(staffRows, billData) { return analyseAll(staffRows, [billData]); }
 
 // ── Chart helpers ──
 function destroyCharts() { Object.values(_charts).forEach(c => { try { c.destroy(); } catch(e) {} }); _charts = {}; }
@@ -536,18 +603,19 @@ function billingPage(r) {
 // ── PAGE: CROSS-REFERENCE ──
 function xrefPage(r) {
   const rows = r.crossRef || [];
+  const allMonths = r.allMonths || [];
+  const monthHeaders = allMonths.map(m => `<th>${m} (SGD)</th>`).join('');
   return `
   <div class="card full">
     <div class="card-title">${ico.xref} Staff ↔ billing cross-reference &nbsp;<span style="font-size:10px;font-weight:400;color:#64748b;text-transform:none">Each number matched to staff with spend summary</span></div>
     <p style="font-size:10px;color:#64748b;margin-bottom:.65rem">Sorted by total spend (high to low). Update Staff Master to refresh staff details.</p>
     <div class="tbl-wrap">
-      <table><thead><tr><th>Phone number</th><th>Staff name</th><th>Department</th><th>Location</th><th>Status</th><th>Feb-26 (SGD)</th><th>Mar-26 (SGD)</th><th>Apr-26 (SGD)</th><th>May-26 (SGD)</th><th>Total (SGD)</th><th>IDD total (SGD)</th><th>IDD countries</th><th>HR flag</th></tr></thead>
+      <table><thead><tr><th>Phone number</th><th>Staff name</th><th>Department</th><th>Location</th><th>Status</th>${monthHeaders}<th>Total (SGD)</th><th>IDD total (SGD)</th><th>IDD countries</th><th>HR flag</th></tr></thead>
       <tbody>${rows.map(row => `<tr class="${row.flag==='Pending'?'pending':''}">
         <td>${row.num||'—'}</td><td><strong>${row.name||'—'}</strong></td><td>${row.dept||'—'}</td>
         <td>${row.loc||'—'}</td>
         <td><span class="badge ${row.status==='Hire'?'b-green':row.status==='Pending'?'b-amber':'b-gray'}">${row.status||'—'}</span></td>
-        <td>${row.feb ? f2(row.feb) : '—'}</td><td>${row.mar ? f2(row.mar) : '—'}</td>
-        <td>${row.apr ? f2(row.apr) : '—'}</td><td>${row.may ? f2(row.may) : '—'}</td>
+        ${allMonths.map(m => `<td>${row[m] ? f2(row[m]) : '—'}</td>`).join('')}
         <td><strong>${f2(row.total||0)}</strong></td>
         <td>${row.iddTotal ? `<span class="badge b-amber">${f2(row.iddTotal)}</span>` : '—'}</td>
         <td>${row.countries||'—'}</td>
@@ -579,9 +647,9 @@ function renderDash(r, resetTab) {
     </div>
     <div class="bh-right">
       <span class="period-badge">${r.month}</span>
-      <label class="btn btn-label" title="Upload next month's Singtel bill">
-        ${ico.upload} New bill
-        <input type="file" accept=".pdf,.csv" style="display:none" onchange="handleNewBill(event)">
+      <label class="btn btn-label" title="Add more monthly bills">
+        ${ico.upload} Add bills
+        <input type="file" accept=".pdf,.csv" multiple style="display:none" onchange="handleNewBill(event)">
       </label>
       <button class="btn" onclick="renderUpload()">${ico.refresh} Reset</button>
     </div>
@@ -598,25 +666,59 @@ function renderDash(r, resetTab) {
 
 // ── New bill (keep staff master) ──
 window.handleNewBill = async function(e) {
-  const file = e.target.files[0]; if (!file || !S.files.staff) return;
-  if (S.result?.monthlySummary) S.prevData = { summary: S.result.monthlySummary };
-  app.innerHTML = `<div class="spinner"><div class="spin"></div><div style="font-size:13px;color:#64748b">Reading ${file.name}…</div></div>`;
+  const newFiles = Array.from(e.target.files);
+  if (!newFiles.length || !S.files.staff) return;
+  app.innerHTML = `<div class="spinner"><div class="spin"></div><div style="font-size:13px;color:#64748b">Reading ${newFiles.length} new bill file(s)…</div></div>`;
   try {
-    const buf = await file.arrayBuffer();
-    const bd = file.name.toLowerCase().endsWith('.csv') ? parseCSVBill(new TextDecoder().decode(buf)) : parseBillText(await pdfToText(buf));
-    renderDash(analyse(S.files.staff, bd), true);
+    // Parse existing bills from current result
+    const existingBills = (S.result?.monthlySummary || []).map(m => ({
+      billMonth: m.month, totalBill: m.total, iddTotal: m.idd,
+      lineCharges: {}, iddRows: []
+    }));
+    // Parse new files
+    const newBills = [];
+    for (const file of newFiles) {
+      const buf = await file.arrayBuffer();
+      const bd = file.name.toLowerCase().endsWith('.csv')
+        ? parseCSVBill(new TextDecoder().decode(buf))
+        : parseBillText(await pdfToText(new Uint8Array(buf)));
+      if (!bd.billMonth) {
+        const fnLower = file.name.toLowerCase();
+        const moMatch = fnLower.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s_-]?(\d{2,4})/i);
+        if (moMatch) bd.billMonth = moMatch[0].replace(/[_-]/g,' ');
+      }
+      newBills.push(bd);
+    }
+    // Re-process all bills stored + new ones
+    S.files.billRaws = [...(S.files.billRaws || []), ...newFiles];
+    renderDash(analyseAll(S.files.staff, [...(S._allBillData||[]), ...newBills]), true);
+    S._allBillData = [...(S._allBillData||[]), ...newBills];
   } catch(err) { showErr(err.message); }
 };
 
 // ── Process both files ──
+// After analyseAll, store parsed bills for future "add month" use
 async function processFiles() {
-  app.innerHTML = `<div class="spinner"><div class="spin"></div><div style="font-size:13px;color:#64748b">Matching staff to bill…</div></div>`;
+  app.innerHTML = `<div class="spinner"><div class="spin"></div><div style="font-size:13px;color:#64748b">Reading ${S.files.billRaws.length} bill file(s) and matching to staff…</div></div>`;
   try {
-    const [sb, bb] = await Promise.all([S.files.staffRaw.arrayBuffer(), S.files.billRaw.arrayBuffer()]);
+    const sb = await S.files.staffRaw.arrayBuffer();
     const staffRows = parseStaff(new Uint8Array(sb));
     S.files.staff = staffRows;
-    const bd = S.files.billRaw.name.toLowerCase().endsWith('.csv') ? parseCSVBill(new TextDecoder().decode(bb)) : parseBillText(await pdfToText(new Uint8Array(bb)));
-    renderDash(analyse(staffRows, bd), true);
+    const billDataArr = [];
+    for (const billFile of S.files.billRaws) {
+      const buf = await billFile.arrayBuffer();
+      const bd = billFile.name.toLowerCase().endsWith('.csv')
+        ? parseCSVBill(new TextDecoder().decode(buf))
+        : parseBillText(await pdfToText(new Uint8Array(buf)));
+      if (!bd.billMonth) {
+        const fnLower = billFile.name.toLowerCase();
+        const moMatch = fnLower.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s_-]?(\d{2,4})/i);
+        if (moMatch) bd.billMonth = moMatch[0].replace(/[_-]/g,' ');
+      }
+      billDataArr.push(bd);
+    }
+    S._allBillData = billDataArr;
+    renderDash(analyseAll(staffRows, billDataArr), true);
   } catch(err) { showErr(err.message); }
 }
 
@@ -626,7 +728,7 @@ function showErr(msg) {
 
 // ── Upload screen ──
 function renderUpload() {
-  S = { tab: 'dashboard', result: null, prevData: null, files: { staffRaw: null, billRaw: null, staff: null } };
+  S = { tab: 'dashboard', result: null, prevData: null, _allBillData: [], files: { staffRaw: null, billRaws: [], staff: null } };
   app.innerHTML = `
   <div class="upload-screen">
     <div class="upload-gold-bar"></div>
@@ -644,10 +746,10 @@ function renderUpload() {
         <div class="ub-done" id="staff-done"></div>
       </div></label>
       <label for="f-bill"><div class="upload-box" id="box-bill">
-        <input type="file" id="f-bill" accept=".pdf,.csv" onchange="onFile(event,'bill')">
+        <input type="file" id="f-bill" accept=".pdf,.csv" multiple onchange="onFile(event,'bill')">
         <span class="ub-icon gold">${ico.invoice}</span>
-        <div class="ub-title">Singtel Monthly Bill</div>
-        <div class="ub-sub">PDF or CSV<br>Charges &nbsp;·&nbsp; IDD &nbsp;·&nbsp; Line items extracted automatically</div>
+        <div class="ub-title">Singtel Monthly Bills</div>
+        <div class="ub-sub">PDF or CSV &nbsp;·&nbsp; Select <strong>multiple files</strong> at once<br>Feb, Mar, Apr, May — all months together</div>
         <div class="ub-done" id="bill-done"></div>
       </div></label>
     </div>
@@ -662,13 +764,28 @@ function renderUpload() {
   });
 }
 
-window.onFile = function(e, type) { const f = e.target.files[0]; if (f) markFile(f, type); };
+window.onFile = function(e, type) {
+  if (type === 'staff') {
+    const f = e.target.files[0]; if (f) markFile(f, type);
+  } else {
+    const files = Array.from(e.target.files); if (files.length) markBills(files);
+  }
+};
+
+function markBills(files) {
+  S.files.billRaws = files;
+  const box = document.getElementById('box-bill');
+  const done = document.getElementById('bill-done');
+  box.classList.add('done');
+  done.textContent = '✓ ' + files.length + ' bill file(s): ' + files.map(f => f.name).join(', ').slice(0, 60) + (files.map(f=>f.name).join(', ').length > 60 ? '…' : '');
+  if (S.files.staffRaw && S.files.billRaws.length) document.getElementById('btn-go').classList.add('ready');
+}
 
 function markFile(f, type) {
-  if (type === 'staff') S.files.staffRaw = f; else S.files.billRaw = f;
-  document.getElementById('box-' + type).classList.add('done');
-  document.getElementById(type + '-done').textContent = '✓ ' + f.name;
-  if (S.files.staffRaw && S.files.billRaw) document.getElementById('btn-go').classList.add('ready');
+  S.files.staffRaw = f;
+  document.getElementById('box-staff').classList.add('done');
+  document.getElementById('staff-done').textContent = '✓ ' + f.name;
+  if (S.files.staffRaw && S.files.billRaws.length) document.getElementById('btn-go').classList.add('ready');
 }
 
 // renderUpload called by dynamic loader
